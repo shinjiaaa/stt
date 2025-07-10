@@ -1,139 +1,147 @@
 import os
 import time
-from pathlib import Path
+import configparser
 
+from pathlib import Path
+import speech_recognition as sr
+from streamlit_webrtc import webrtc_streamer
 import streamlit as st
 from model import RtzrAPI
 from transformers import BartForConditionalGeneration, PreTrainedTokenizerFast
 
 
-@st.cache_resource()  # cache사용해서 새로고침 시 리소스 절감
+# config.ini에서 API 키 불러오기
+def load_config(config_file="config.ini"):
+    config = configparser.ConfigParser()
+    config.read(config_file)
+    return config["RTZR"]["client_id"], config["RTZR"]["client_secret"]
+
+
+@st.cache_resource()  # 모델 캐싱
 def load_model():
-    """모델 불러오는 함수"""
+    """허깅페이스 모델 불러오기"""
     model = BartForConditionalGeneration.from_pretrained("EbanLee/kobart-summary-v3")
     tokenizer = PreTrainedTokenizerFast.from_pretrained("EbanLee/kobart-summary-v3")
     return model, tokenizer
 
 
 def stream_data(text: str) -> None:
-    """인자로 받은 text를 출력해주는 함수"""
+    """텍스트를 한 단어씩 잘라서 Streamlit에 출력"""
     for word in text.split(" "):
-        yield word + " "
-        time.sleep(0.02)
+        yield word + " "  # 단어 사이에 공백 추가 (단어 단위로 분리)
 
 
-def file_upload_save(dir: str, upload_file: str) -> str:
-    """업로드한 파일을 지정된 경로에 다운받고, 로컬 폴더의 경로를 반환하는 함수"""
-    try:
-        if not os.path.exists(dir):
-            os.mkdir(dir)
-    except OSError:
-        print("error")
-
-    if upload_file is not None:
-        bytes_data = upload_file.read()
-        with open(f"{dir}/{upload_file.name}", "wb") as file:
-            file.write(bytes_data)
-        path = Path(dir) / upload_file.name
-    return path
+def file_upload_save(dir: str, upload_file) -> str:
+    """녹음 파일을 로컬에 (임시) 저장"""
+    os.makedirs(dir, exist_ok=True)
+    path = Path(dir) / upload_file.name
+    with open(path, "wb") as f:
+        f.write(upload_file.read())
+    return str(path)
 
 
-def display_audio_file(wavpath: str) -> None:
-    """streamlit audio 재생"""
-    audio_bytes = open(wavpath, "rb").read()
-    file_type = Path(wavpath).suffix
-    st.audio(audio_bytes, format=f"audio/{file_type}", start_time=0)
+def detect_menu_item(recognized_text: str, menu_list: list) -> list:
+    """인식된 텍스트에서 메뉴 리스트에 있는 단어를 감지해 장바구니에 추가하는 함수"""
+    cart = []
+    for menu in menu_list:
+        if menu in recognized_text:
+            cart.append(menu)
+    return cart
 
 
-def page_setup(logo_url: str, homepage_url: str, tutorial_url: str) -> st.file_uploader:
-    """streamlit 메인페이지 구성 return은 음성 파일이 들어있는 my_upload"""
-
-    if "model" not in st.session_state:
-        with st.spinner("model and page loading..."):
-            st.session_state.model, st.session_state.tokenizer = load_model()
-
+# 페이지 상단 UI & 오디오 녹음 컴포넌트
+def page_setup(logo_url: str, homepage_url: str) -> bytes | None:
     st.markdown(
-        f'[![Click me]({logo_url})]({homepage_url}) <span style="font-size: 30px;">**Return Zero**</span>',
+        f'[![Click me]({logo_url})]({homepage_url}) <span style="font-size:30px;">**Return Zero**</span>',
         unsafe_allow_html=True,
     )
-    st.header("음성 변환 및 요약 웹앱 Tutorial", divider="gray")
 
-    st.subheader("[API 키 발급 받으러 가기](%s)" % tutorial_url)
-    st.sidebar.write("## 아래를 채워주세요!(*는 필수)")
-    with st.sidebar.form("my-form", clear_on_submit=False):
-        st.checkbox("dev?", key="dev")
-        st.text_input("*Client Id를 작성해주세요👇", placeholder="client id", key="client_id")
-        st.text_input(
-            "*Client Secret을 작성해주세요👇",
-            placeholder="client secret",
-            key="client_secret",
-        )
-        my_upload = st.file_uploader(
-            "*오디오 파일을 업로드 해주세요",
-            type=["mp4", "m4a", "mp3", "amr", "flac", "wav"],
-            key="file",
-        )
-        st.radio("화자의 수는 몇 명인가요?", ["1", "2", "3", "4+"], key="speaker_num")
-        st.radio("도메인은 어떤 분야인가요?", ["일반", "전화통화"], key="domain")
-        st.checkbox("욕설 필터링을 할까요?", key="profanity_filter")
-        st.text_input(
-            "음성 인식에 중요한 키워드를 입력해주세요",
-            placeholder="대한민국, 일본, 중국",
-            key="boost_keyword",
-        )
-        st.form_submit_button("submit")
-    return my_upload
+    # 오디오 녹음 컴포넌트
+    webrtc_ctx = webrtc_streamer(
+        key="audio_recorder", media_stream_constraints={"audio": True, "video": False}
+    )
+
+    audio_bytes = None
+    if webrtc_ctx.audio_receiver:
+        audio_frames = webrtc_ctx.audio_receiver.get_frames(timeout=1)
+        if audio_frames:
+            audio_bytes = b"".join([frame.to_bytes() for frame in audio_frames])
+
+    if audio_bytes:
+        return audio_bytes
+    else:
+        return None
 
 
-def display_result(audio_file_path: str, upload_file: st.file_uploader) -> None:
-    """streamlit 결과 화면"""
-    if st.session_state.client_id and st.session_state.client_secret and st.session_state.file:
-        # sound file download func
-        file_path: str = str(file_upload_save(audio_file_path, upload_file))
-        file: dict = {"file": (file_path, open(file_path, "rb"))}
-        speaker_num: int = 0 if st.session_state.speaker_num == "4+" else int(st.session_state.speaker_num)
-        # call RtzrAPI class
+def process_audio_file(file_path):
+    """WAV 파일을 받아서 텍스트로 변환"""
+    recognizer = sr.Recognizer()
+    with sr.AudioFile(file_path) as source:
+        audio_data = recognizer.record(source)
         try:
-            api = RtzrAPI(
-                st.session_state.client_id,
-                st.session_state.client_secret,
-                st.session_state.dev,
-                file,
-                speaker_num,
-                st.session_state.domain,
-                st.session_state.profanity_filter,
-                st.session_state.boost_keyword.replace(" ", "").split(","),
-                st.session_state.model,
-                st.session_state.tokenizer,
+            text = recognizer.recognize_google(
+                audio_data, language="ko-KR"
+            )  # 한국어 인식
+            return text
+        except sr.UnknownValueError:
+            return "음성을 인식할 수 없습니다."
+        except sr.RequestError as e:
+            return f"API 요청 오류: {e}"
+
+
+def display_result(audio_file_path: str, audio_data) -> None:
+    """결과 출력 페이지"""
+    if audio_data is None:
+        st.info("녹음을 시작해 주세요.")
+        return
+
+    try:
+        client_id, client_secret = load_config()
+
+        # 파일 저장
+        file_path = file_upload_save(audio_file_path, audio_data)
+        file_dict = {"file": (file_path, open(file_path, "rb"))}
+
+        # API 호출
+        api = RtzrAPI(
+            client_id,
+            client_secret,
+            dev=False,
+            file=file_dict,
+            speaker_num=1,  # default
+            domain="일반",
+            profanity_filter=False,
+            boost_keywords=[],
+            model=st.session_state.model,
+            tokenizer=st.session_state.tokenizer,
+        )
+
+        with st.spinner("음성을 처리 중입니다..."):
+            while api.get_raw_data() is None:
+                time.sleep(5)
+                api.api_get()
+
+            api.summary_inference()
+
+            col1 = st.columns(1)[0]
+            col1.markdown("## 변환된 텍스트")
+            col1.container(border=True, height=400).write_stream(
+                stream_data(api.get_text_data())
             )
 
-            with st.spinner("wait for it"):
-                while api.get_raw_data() is None:
-                    time.sleep(5)
-                    api.api_get()
+            os.remove(file_path)  # 저장한 녹음 파일을 삭제 (임시 저장하는 거임)
 
-                # inference
-                api.summary_inference()
+    except Exception as e:
+        st.error(f"error: {str(e)}")
 
-                # audio file display
-                display_audio_file(file_path)
 
-                # result print
-                col1, col2 = st.columns(2)
-                col1.markdown("## 음성 변환")
-                all_text_field = col1.container(border=True, height=400)
+# main
+RTZR_LOGO_URL = "https://www.rtzr.ai/rtzr_logo.svg"
+RTZR_HOMEPAGE_URL = "http://rtzr.ai"
+AUDIO_FILE_PATH = "./resource"
 
-                col2.markdown("## 음성 변환 요약")
-                summary_text_field = col2.container(border=True, height=400)
+st.set_page_config(layout="wide", page_title="STT", page_icon=RTZR_LOGO_URL)
 
-                all_text_field.write_stream(stream_data(api.get_text_data()))
-                summary_text_field.write_stream(stream_data(api.get_summary_data()))
-
-                os.remove(file_path)
-
-        except Exception as e:
-            st.write(f"오류 발생: {str(e)}")
-
-    else:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.subheader("Client id, Client Secret, 변환할 파일을 올려주세요")
+if __name__ == "__main__":
+    audio_data = page_setup(RTZR_LOGO_URL, RTZR_HOMEPAGE_URL)
+    display_result(AUDIO_FILE_PATH, audio_data)
