@@ -17,6 +17,12 @@ from PyQt5 import QtWidgets
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 
+from PyQt5 import QtCore
+
+from audio_helper import record_audio, save_wav, audio_to_text, detect_menu_items
+
+
+
 
 def resource_path(relative_path):
     """UI 받아오는 함수"""
@@ -26,6 +32,7 @@ def resource_path(relative_path):
 
 # UI 불러오기
 main_page_class = uic.loadUiType(resource_path('./UI/mega_ui_ver3.ui'))[0] # 메가 메인 UI 불러오기
+senior_page_class = uic.loadUiType(resource_path('./UI/mega_ui_ver3_senior.ui'))[0]  # 시니어 UI
 choose_option_class = uic.loadUiType(resource_path('./UI/mega_choose_option_page.ui'))[0] # 메가 음료옵션창 불러오기
 msg_box_class = uic.loadUiType(resource_path('./UI/msg_box.ui'))[0]  # 메세지박스 ui 불러오기
 point_page_class = uic.loadUiType(resource_path('./UI/point_page.ui'))[0] # 포인트페이지 창 띄우기
@@ -37,6 +44,8 @@ receipt_page = uic.loadUiType(resource_path('./UI/receipt_page_2.ui'))[0] # 영�
 # point_page_ui = resource_path('./UI/point_page.ui')
 # manager_page_ui = resource_path('./UI/manager_page.ui')
 
+
+
 class Rept(QDialog, receipt_page):
     """영수증"""
     def __init__(self, parent, order_num, t_price):
@@ -44,6 +53,7 @@ class Rept(QDialog, receipt_page):
         self.setupUi(self)
         self.parent = parent
 
+        self.start_recording_on_page_change()
         self.order_number_label.setText(str(order_num))
         self.total_price_label.setText(str(t_price))
         self.set_datetime()
@@ -235,6 +245,8 @@ class MSG_Dialog(QDialog, msg_box_class):
         print(text)
 
 
+
+''' 사용자가 옵션 (시럽, 샷추가 같은 옵션을 선택할 수 있게 해주는 클래스)'''
 class Option_Class(QDialog, choose_option_class):
     """선택옵션 창"""
     data_signal = pyqtSignal(str)
@@ -301,13 +313,13 @@ class Option_Class(QDialog, choose_option_class):
         self.reset_btn.clicked.connect(self.btn_duplicates_check)  # 옵션 초기화 버튼
 
         # db불러오기
-        self.con = sqlite3.connect('./DATA/data.db')  # 데이터베이스 연결 정보 설정
+        self.con = sqlite3.connect(r"C:\Users\USER\Downloads\mega_kiosk\DATA\data.db")  # 데이터베이스 연결 정보 설정
 
     def set_extra_charge(self):
         """버튼 누를 때마다 옵션 가격 추가해주는 부분"""
 
         # 옵션 가격 데이터 불러오기
-        option_price = pd.read_csv('./DATA/drinks_price.csv')
+        option_price = pd.read_csv(r"C:\Users\USER\Downloads\mega_kiosk\DATA\drinks_price.csv")
         option_price_eng_name = option_price['eng_name'].to_list()
 
         # 눌린 버튼들 확인하기 및 라벨에 업데이트
@@ -378,7 +390,7 @@ class Option_Class(QDialog, choose_option_class):
         self.parent.remove_label()
         self.accept()
 
-    def order_confirm(self):
+    def order_confirm(self):   
         """선택옵션 확인 후 db에 저장"""
 
         self.parent.drink_num += 1  # 주문 수량 늘려줌
@@ -437,7 +449,7 @@ class WindowClass(QMainWindow, main_page_class):
         # 메인화면 시작 ##################################################################################################
 
         # 0. DB 불러오기
-        con = sqlite3.connect('./DATA/data.db')
+        con = sqlite3.connect(r'C:\Users\USER\Downloads\mega_kiosk\DATA\data.db')
         self.price_df = pd.read_sql('select * from drinks_price', con)  # 가격 테이블
         self.menu_df = pd.read_sql('select * from drinks_menu', con)  # 음료상세정보 전체 테이블
         self.img_path_df = pd.read_sql('select * from drinks_img_path', con)  # 음료 이미지 경로 테이블
@@ -553,6 +565,7 @@ class WindowClass(QMainWindow, main_page_class):
         self.horizontalSlider.setCursor(QCursor(QPixmap('./img/qt자료/matercard.png').scaled(80, 70)))
 
     ## 함수 시작 #######################################################################################################
+    
     '''결제창 관련 함수'''
 
     def askRcpt(self):
@@ -679,7 +692,7 @@ class WindowClass(QMainWindow, main_page_class):
 
     def payment_choose_signal(self):
         """결제수단 버튼에 따라 다른 정보 전달"""
-        payment_btn_df = pd.read_csv('./DATA/payment_choose.csv')  # csv 값 가져오기(결제버튼 정보)
+        payment_btn_df = pd.read_csv(r"C:\Users\USER\Downloads\mega_kiosk\DATA\payment_choose.csv")  # csv 값 가져오기(결제버튼 정보)
         payment_choose_buttons = self.payment_choose_main_widget.findChildren(QPushButton)  # 결제창에 있는 모든 버튼 가져오기
         for btn in payment_choose_buttons:
             con1 = payment_btn_df['btn_name'] == btn.objectName()  # 버튼객체이름과 같은 버튼이라는 조건에 맞다면
@@ -836,6 +849,53 @@ class WindowClass(QMainWindow, main_page_class):
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
 
+
+    def click_frame(self, event, frame_name):
+        """
+            메뉴 프레임 클릭 시 동작: 선택한 메뉴를 DB에 저장하고 테이블 갱신
+        """
+        print(f"{frame_name} 클릭됨")
+
+        # frame_name → 메뉴 ID로 매핑
+        # 예: menu_frame_71 → 71
+        menu_id = int(frame_name.split('_')[-1])
+
+        # 메뉴 정보 가져오기
+        selected_menu = self.menu_df[self.menu_df['id'] == menu_id]
+        if selected_menu.empty:
+            print(f"메뉴 ID {menu_id}를 찾을 수 없습니다.")
+            return
+
+        # 주문 테이블에 저장
+        con = sqlite3.connect(r"C:\Users\USER\Downloads\mega_kiosk\DATA\data.db")
+        order_table_df = pd.read_sql('select * from order_table', con)
+
+        # 이미 존재하면 수량 증가, 없으면 새로 추가
+        if menu_id in order_table_df['id'].values:
+            order_table_df.loc[order_table_df['id'] == menu_id, 'drink_cnt'] += 1
+        else:
+            new_row = {
+                'id': menu_id,
+                'order_drink': selected_menu.iloc[0]['kor_name'],  # 한글 이름
+                'drink_cnt': 1,
+                'price': selected_menu.iloc[0]['price'],
+                'custom_option': "[]",  # 기본 옵션
+                'discount_price': 0,
+                'for_here_or_to_go': ''
+            }
+            order_table_df = pd.concat([order_table_df, pd.DataFrame([new_row])], ignore_index=True)
+
+        # DB에 저장
+        order_table_df.to_sql('order_table', con, if_exists='replace', index=False)
+        con.close()
+
+        # 테이블 위젯 갱신
+        self.fill_the_table_widget(self.tableWidget_menu_check)
+
+        # 필요한 경우 다른 테이블도 갱신
+        # self.fill_the_table_widget(self.tableWidget_menu_2_for_qr)
+        
+
     def move_to_order_check_page(self):
         """주문확인창"""
         # 타이머 중단
@@ -983,7 +1043,7 @@ class WindowClass(QMainWindow, main_page_class):
         self.user_clicked_category = btn_name
 
         # 값 초기화
-        self.connn = sqlite3.connect('./DATA/data.db')
+        self.connn = sqlite3.connect(r'C:\Users\USER\Downloads\mega_kiosk\DATA\data.db')
         self.menu_df = pd.read_sql('select * from drinks_menu', self.connn)  # 음료상세정보 전체 테이블
 
         category_drinks_num = len(self.menu_df[self.menu_df['category'] == btn_name])  # 카테고리 메뉴 갯수 세기
@@ -1078,9 +1138,511 @@ class WindowClass(QMainWindow, main_page_class):
         pixmap = QPixmap(f'./img/ad/ad_img_{self.ad_img_num}')  # 사진 경로 받아오기
         self.ad_label.setPixmap(QPixmap(pixmap).scaled(QSize(768, 1024)))  # 라벨 이미지에 설정함
 
+class RecorderThread(QThread):
+    def run(self):
+        print("[INFO] 백그라운드 스레드에서 녹음 시작")
+        audio_data = record_audio(duration=3)
+        save_wav("recorded_audio.wav", audio_data)
+        recognized_text = audio_to_text("recorded_audio.wav")
+        print(f"[INFO] 인식된 텍스트: {recognized_text}")
+
+class SeniorWindowClass(QMainWindow, senior_page_class):
+    clicked = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.setupUi(self)
+
+        # DB 경로
+        self.db_path = r"C:\Users\USER\Downloads\mega_kiosk\DATA\data.db"
+        self.csv_path = r"C:\Users\USER\Downloads\mega_kiosk\DATA\data.csv"
+
+        # 주문 테이블 초기화
+        self.clear_order_table()
+
+        # 메뉴 프레임 리스트 (언더바 2개 형태 기준)
+        self.menu_frame_list = [
+            *[getattr(self, f"menu_frame__{num}") for num in [
+                # 기존 메뉴 + 아이스 + 핫 번호들
+                #52, 51, 53, 56, 112, 115, 117, 125,
+                #58, 59, 47, 44,
+                #126, 124, 125, 71, 75, 76, 74, 73,
+                #156, 148, 157, 145,
+                #99, 104, 105, 103, 107, 108, 106, 162,
+                #86, 90, 91, 92, 94, 95, 93, 163
+            ]]
+        ]
+
+        for frame in self.menu_frame_list:
+            frame.installEventFilter(self)
+
+        # DB 연결해서 데이터프레임 읽기
+        con = sqlite3.connect(self.db_path)
+        self.price_df = pd.read_sql('select * from drinks_price', con)
+        self.menu_df = pd.read_sql('select * from drinks_menu', con)
+        self.img_path_df = pd.read_sql('select * from drinks_img_path', con)
+        self.order_table_df = pd.read_sql('select * from order_table', con)
+        con.close()
+
+        # 주문번호 초기화
+        self.drink_num = 0
+        self.order_num = 100
+
+        self.DURATION_INT = 60  # 또는 원하는 타임아웃 시간 (초 단위)
+        self.remaining_time = self.DURATION_INT
+
+
+        # 타이머 설정
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_timer)
+        self.timer.setInterval(1000)
+
+        # 초기 페이지를 명확히 설정 (맨 마지막에 추가)
+        self.stackedWidget.setCurrentWidget(self.page_main_1)
+
+        # 타이머 시작
+        self.timer.start()
+
+        self.stackedWidget.currentChanged.connect(self.on_page_changed)
+
+        # 페이지 이동      
+        self.pushButton.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.menu_option)) #어서오세요 -> 메뉴옵션(커피,음료수,디저트)
+        self.option1_btn.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.C_I_H_option_page)) #메뉴옵션(커피) -> 커피옵션(차가운거,따듯한거)
+        self.option2_btn.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.D_I_H_option_page)) #메뉴옵션(음료수) -> 커피옵션(차가운거,따듯한거)
+        self.option3_btn.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.dessert_page)) #메뉴옵션(디저트) -> 디저트 페이지
+        
+        #커피
+        self.coffee_ice_btn.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.coffee_cold_page))
+        self.coffee_hot_btn.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.coffee_hot_page))
+        #홈버튼 , 결재버튼 
+        self.home_button_3.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.page_main_1))
+        self.payment_admit_btn1.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.order_check_page))
+
+        self.menu_left_btn_4.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_menu2))
+        self.menu_right_btn_5.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_menu1))
+        self.menu_left_btn_6.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_h_menu2))
+        self.menu_right_btn_9.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_h_menu1))
+
+        self.payment_admit_btn1.clicked.connect(self.move_to_order_check_page)
+        self.payment_admit_btn2.clicked.connect(self.move_to_order_check_page)
+        self.cancel_btn_1.clicked.connect(self.timer_restart_and_go_to_main_page)
+        self.cancel_btn_5.clicked.connect(self.timer_restart_and_go_to_main_page)
+        self.home_button_6.clicked.connect(self.timer_restart_and_go_to_main_page)
+        self.home_button_3.clicked.connect(self.timer_restart_and_go_to_main_page)
+
+
+        #음료수
+        self.D_ice_btn.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.drinks_option_page)) #음료수 옵션(차가운거)-> 탄산유무페이지  
+        self.fizz_btn.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.drinks_cold_fizz_page)) #탄산o - > 탄산페이지
+        self.non_fizz_btn.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.drinks_cold_nonfizz_page)) #탄산x - > 탄산x페이지
+        self.D_hot_btn.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.drinks_hot_page)) #음료수 옵션(따뜻한거)-> 따뜻한 음료 페이지 
+        
+        '''음료수 탄산 페이지''' 
+
+        #홈버튼 , 결재버튼 
+        self.home_button_4.clicked.connect(self.timer_restart_and_go_to_main_page)
+        self.payment_admit_btn1_2.clicked.connect(self.move_to_order_check_page)
+
+        self.menu_left_btn_7.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_menu2))
+        self.menu_right_btn_6.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_menu1_2))
+        self.menu_left_btn_7.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_h_menu2))
+        self.menu_right_btn_6.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_h_menu1))
+
+        self.cancel_btn_6.clicked.connect(self.timer_restart_and_go_to_main_page)
+        
+        #self.payment_admit_btn1_2.clicked.connect(self.move_to_order_check_page)
+        #self.payment_admit_btn2.clicked.connect(self.move_to_order_check_page)
+        #self.cancel_btn_1.clicked.connect(self.timer_restart_and_go_to_main_page)
+        #self.cancel_btn_5.clicked.connect(self.timer_restart_and_go_to_main_page)
+        #self.home_button_6.clicked.connect(self.timer_restart_and_go_to_main_page)
+        #self.home_button_3.clicked.connect(self.timer_restart_and_go_to_main_page)
+
+        '''음료수 논탄산 페이지 '''
+        #홈버튼 , 결재버튼 
+        self.home_button_4.clicked.connect(self.timer_restart_and_go_to_main_page)
+        self.payment_admit_btn1_5.clicked.connect(self.move_to_order_check_page)
+
+        self.menu_left_btn_8.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_menu2_2))
+        self.menu_right_btn_10.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_menu1_2))
+        self.menu_left_btn_8.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_h_menu2_2))
+        self.menu_right_btn_10.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_h_menu1_2))
+
+
+        self.cancel_btn_9.clicked.connect(self.timer_restart_and_go_to_main_page)
+
+
+        '''음료수 따뜻한거 페이지 '''
+        #홈버튼 , 결재버튼 
+        self.home_button_6.clicked.connect(self.timer_restart_and_go_to_main_page)
+        self.payment_admit_btn1_3.clicked.connect(self.move_to_order_check_page)
+
+        self.menu_left_btn_12.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_menu2_3))
+        self.menu_right_btn_13.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_menu1_3))
+        self.menu_left_btn_12.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_h_menu2_3))
+        self.menu_right_btn_13.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_h_menu1_3))
+
+
+        self.cancel_btn_7.clicked.connect(self.timer_restart_and_go_to_main_page)
+
+        ''' 디저트 페이지 '''
+
+        #홈버튼 , 결재버튼 
+        self.home_button_6.clicked.connect(self.timer_restart_and_go_to_main_page)
+        self.payment_admit_btn1_4.clicked.connect(self.move_to_order_check_page)
+
+        self.menu_left_btn_13.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_menu2_4))
+        self.menu_right_btn_14.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_menu1_4))
+        self.menu_left_btn_13.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_h_menu2_4))
+        self.menu_right_btn_14.clicked.connect(lambda: self.stackedWidget_2.setCurrentWidget(self.c_h_menu1_4))
+
+
+        self.cancel_btn_8.clicked.connect(self.timer_restart_and_go_to_main_page)
+
+
+        ''' 메뉴 페이지 로직 끗 '''
+
+        #먹고가기 포장하기 버튼 로직
+        self.take_out_btn.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.payment_choose_page))
+        self.eat_here_btn.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.payment_choose_page))
+        
+        #결제수단 선택 버튼 로직
+        #self.setup_senior_payment_buttons()
+        self.cardButton.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.charge_page))
+        self.cashButton.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.charge_page))
+        self.couponButton.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.charge_page))
+
+        #결제창 버튼 로직 
+        self.back_to_main_page_btn.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.page_main_1))
+        self.cancel_btn_3.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.payment_choose_main))
+        self.cancel_btn_4.clicked.connect(lambda: self.stackedWidget.setCurrentWidget(self.payment_choose_main))
+        self.order_btn.clicked.connect(self.handle_order_btn)
+
+
+
+
+
+
+        # 메뉴 정보를 화면에 로드하고 매핑
+        self.load_senior_menu()
+
+
+
+    def start_recording_on_page_change(self):
+        self.recorder_thread = RecorderThread()
+        self.recorder_thread.start()
+
+
+
+    ''' 함수시작 '''
+
+    ###############함수시작##################################################################################################################################    
+    def clear_order_table(self):
+        """order_table을 초기화"""
+        con = sqlite3.connect(r"C:\Users\USER\Downloads\mega_kiosk\DATA\data.db")
+        cur = con.cursor()
+        cur.execute("DELETE FROM order_table")
+        con.commit()
+        con.close()
+        print("[INFO] order_table 초기화 완료")
+
+
+    
+
+    def on_page_changed(self, index):
+        print(f"[INFO] 페이지 {index}로 변경됨 → 무조건 녹음 시작!")
+        self.start_recording_on_page_change()
+
+
+    def get_frame_name_from_menu(self, menu_name):
+        """
+        메뉴명 → 프레임 이름 반환
+        """
+        for frame_name, info in self.menu_info_map.items():
+            if info["kor_name"] == menu_name:
+                return frame_name
+        print(f"[WARN] {menu_name} 에 해당하는 프레임 없음")
+        return None
+
+    def load_senior_menu(self):
+        """
+        senior_menu.csv를 읽어 frame__XX 에 메뉴명, 가격, 이미지 표시
+        그리고 frame_name → 메뉴정보를 self.menu_info_map에 저장
+        """
+
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        self.csv_path = os.path.join(base_dir, "DATA", "senior_menu.csv")
+
+        senior_menu_df = pd.read_csv(self.csv_path, encoding='cp949')
+    
+
+        self.menu_info_map = {}  # frame_name → {kor_name, price, img_path}
+
+        # frame 번호 리스트 추출 (frame 이름에서 번호만 따기)
+        frame_nums = [int(frame.objectName().split("__")[-1]) for frame in self.menu_frame_list]
+
+        for frame_num in frame_nums:
+            row = senior_menu_df[senior_menu_df['no'] == frame_num]
+            if not row.empty:
+                kor_name = row.iloc[0]['이름']
+                price = int(row.iloc[0]['가격'])
+                img_path = row.iloc[0]['설명.img_path']
+
+                try:
+                    name_label = getattr(self, f"menu_name_label__{frame_num}")
+                    price_label = getattr(self, f"menu_price_label__{frame_num}")
+                    img_label = getattr(self, f"menu_img__{frame_num}")
+                except AttributeError as e:
+                    print(f"[ERROR] 위젯 이름 확인 필요: {e}")
+                    continue
+
+                name_label.setText(kor_name)
+                price_label.setText(str(price))
+
+                pixmap = QPixmap(img_path)
+                if not pixmap.isNull():
+                    img_label.setPixmap(pixmap.scaled(
+                        img_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                else:
+                    img_label.setText("이미지 없음")
+
+                self.menu_info_map[f"menu_frame__{frame_num}"] = {
+                    "kor_name": kor_name,
+                    "price": price,
+                    "menu_id": frame_num  # frame 번호 == 메뉴 ID
+                }
+            else:
+                print(f"[WARN] senior_menu.csv에 no={frame_num} 해당 메뉴 없음")
+
+
+
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.MouseButtonPress:
+            if obj in self.menu_frame_list:
+                self.click_frame(obj.objectName())
+                return True
+        return super().eventFilter(obj, event)
+
+    def click_frame(self, frame_name):
+        print(f"{frame_name} 클릭됨")
+
+        menu_info = self.menu_info_map.get(frame_name)
+        if menu_info is None:
+            print(f"[ERROR] {frame_name}에 대한 메뉴정보가 없습니다.")
+            return
+
+        kor_name = menu_info['kor_name']
+        price = menu_info['price']
+        menu_id = menu_info['menu_id']
+
+        # DB 업데이트
+        con = sqlite3.connect(r"C:\Users\pgr05\embeded\mega_kiosk\DATA\data.db")
+        order_table_df = pd.read_sql('select * from order_table', con)
+
+        if menu_id in order_table_df.get('id', pd.Series()).values:
+            order_table_df.loc[order_table_df['id'] == menu_id, 'drink_cnt'] += 1
+        else:
+            new_row = {
+                'id': menu_id,
+                'order_drink': kor_name,
+                'drink_cnt': 1,
+                'price': price,
+                'custom_option': "",
+                'discount_price': 0,
+                'for_here_or_to_go': ''
+            }
+            order_table_df = pd.concat([order_table_df, pd.DataFrame([new_row])], ignore_index=True)
+
+        order_table_df.to_sql('order_table', con, if_exists='replace', index=False)
+        con.close()
+
+        print(f"{kor_name} (가격: {price}) 이(가) 주문에 추가되었습니다.")
+        self.fill_the_table_widget(self.tableWidget_menu_check)
+
+
+
+    def setup_senior_payment_buttons(self):
+        self.cardButton.clicked.connect(lambda: self.move_to_charge_page("신용/체크 카드"))
+        self.cashButton.clicked.connect(lambda: self.move_to_charge_page("현금"))
+        self.couponButton.clicked.connect(lambda: self.move_to_charge_page("쿠폰"))
+
+    def move_to_charge_page(self, payment_method_name):
+        self.start_recording_on_page_change()
+        self.payment_card_title_bar.setText(f"  {payment_method_name}")
+        self.stackedWidget.setCurrentWidget(self.charge_page_main)
+        self.update_card_payment_table()
+
+    def move_to_payment_choose(self, state):
+        con = sqlite3.connect('./DATA/data.db')
+        order_table_df = pd.read_sql('select * from order_table', con)
+        order_table_df.loc[:, 'for_here_or_to_go'] = state
+        order_table_df.to_sql('order_table', con, if_exists='replace', index=False)
+        con.close()
+        self.stackedWidget.setCurrentWidget(self.payment_choose_page)
+
+    def handle_order_btn(self):
+        """
+        승인요청 버튼 클릭 시: 승인 요청 중 → 5초 뒤 승인 완료 → 종료
+        """
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Information)
+        msg.setWindowTitle("승인 요청")
+        msg.setText("승인 요청 중입니다...")
+        msg.setStandardButtons(QMessageBox.NoButton)  # 닫기 버튼 없이
+        msg.show()
+
+        # 5초 뒤에 승인 완료 처리
+        QTimer.singleShot(5000, lambda: self.approval_complete(msg))
+
+
+    def approval_complete(self, request_msgbox):
+        """
+        승인 요청 완료 처리
+        """
+        request_msgbox.close()
+        QMessageBox.information(self, "승인 완료", "승인 완료되었습니다.")
+        QApplication.quit()
+
+
+
+
+    def fill_the_table_widget(self, table_widget):
+        import sqlite3
+        from PyQt5 import QtWidgets
+
+        con = sqlite3.connect(r"C:\Users\pgr05\embeded\mega_kiosk\DATA\data.db")
+        order_table_df = pd.read_sql('select * from order_table', con)
+        con.close()
+
+        table_widget.clearContents()
+        table_widget.setRowCount(len(order_table_df))
+        table_widget.setColumnCount(4)
+        table_widget.setHorizontalHeaderLabels(["메뉴명", "수량", "단가", "합계"])
+
+        for row_idx, row in order_table_df.iterrows():
+            table_widget.setItem(row_idx, 0, QtWidgets.QTableWidgetItem(str(row['order_drink'])))  # 수정된 부분
+            table_widget.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(str(row['drink_cnt'])))
+            table_widget.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(str(row['price'])))
+            table_widget.setItem(row_idx, 3, QtWidgets.QTableWidgetItem(str(int(row['drink_cnt']) * int(row['price']))))
+
+        table_widget.resizeColumnsToContents()
+        table_widget.horizontalHeader().setStretchLastSection(True)
+
+
+
+    def move_to_order_check_page(self):
+        self.timer.stop()
+        total_price = self.get_total_price()
+        total_count = self.get_total_cnt()
+        discount_price = self.get_discount_price()
+
+        self.total_price_for_check_page.setText(f"{total_price}원")
+        self.payment_choose_title_bar.setText(f"  결제수단 선택({total_price - discount_price}원)")
+        self.total_payment_price.setText(f"  주문금액: {total_price}원 - 할인금액:{discount_price}원")
+        self.total_payment_price_2.setText(f"  결제금액: {total_price}원")
+        self.total_cnt_for_check_page.setText(f"{total_count}개")
+
+        if total_count > 0:
+            self.stackedWidget.setCurrentWidget(self.order_check_page)
+            self.fill_the_table_widget(self.tableWidget_menu_check)
+            #self.fill_the_table_widget(self.tableWidget_menu_2_for_qr)
+        else:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "알림", "주문된 메뉴가 없습니다.")
+
+    def update_card_payment_table(self):
+        total_price = self.get_total_price()
+        discount_price = self.get_discount_price()
+        final_price = total_price - discount_price
+
+        self.card_payment_table_widget.setRowCount(3)
+        self.card_payment_table_widget.setColumnCount(1)
+        self.card_payment_table_widget.horizontalHeader().setVisible(False)
+        self.card_payment_table_widget.setItem(0, 0, QtWidgets.QTableWidgetItem(f"{final_price}원"))
+        self.card_payment_table_widget.setItem(1, 0, QtWidgets.QTableWidgetItem("0개월"))
+        self.card_payment_table_widget.setItem(2, 0, QtWidgets.QTableWidgetItem(self.make_random_card_num()))
+        self.card_payment_table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+    def make_random_card_num(self):
+        from random import randint
+        random_card_num = [str(randint(1000, 9999)) for _ in range(4)]
+        masked = "*" * 12 + random_card_num[-1]
+        return masked
+
+    from PyQt5.QtCore import QTimer
+
+    def timer_restart_and_go_to_main_page(self):
+        # 타이머 재시작
+        self.timer.start()
+        self.remaining_time = self.DURATION_INT
+
+        # 메인 페이지로 전환
+        self.stackedWidget.setCurrentWidget(self.page_main_1)
+
+        # UI가 뜬 뒤 500ms 후 녹음 시작
+        QTimer.singleShot(500, self.start_recording_on_page_change)
+
+
+        #self.timer.start()
+        #self.stackedWidget.setCurrentWidget(self.page_main_1)
+
+    def get_total_price(self):
+        con = sqlite3.connect(r"C:\Users\pgr05\embeded\mega_kiosk\DATA\data.db")
+        order_table_df = pd.read_sql('select * from order_table', con)
+        con.close()
+        order_table_df['drink_cnt'] = order_table_df['drink_cnt'].astype(int)
+        order_table_df['price'] = order_table_df['price'].astype(int)
+        return (order_table_df['drink_cnt'] * order_table_df['price']).sum()
+
+    def get_total_cnt(self):
+        con = sqlite3.connect(r"C:\Users\pgr05\embeded\mega_kiosk\DATA\data.db")
+        order_table_df = pd.read_sql('select * from order_table', con)
+        con.close()
+        return order_table_df['drink_cnt'].sum()
+
+    def get_discount_price(self):
+        con = sqlite3.connect(r"C:\Users\pgr05\embeded\mega_kiosk\DATA\data.db")
+        order_table_df = pd.read_sql('select * from order_table', con)
+        con.close()
+        discount = order_table_df['discount_price'].sum()
+        return discount if not pd.isna(discount) else 0
+
+    def update_timer(self):
+        if self.stackedWidget.currentWidget() == self.page_main_1:
+            self.remaining_time -= 1
+            if self.remaining_time == 0:
+                self.remaining_time = self.DURATION_INT
+                self.stackedWidget.setCurrentWidget(self.page_main_1)
+
+    
+
+
+''' 라즈베리 파이 로직 시작 '''
+
+
+####  라즈베리 파이와 main 함수 #########################################################################################
+
+    #라즈베리파이에서 신호를 읽어오는 함수
+def get_raspberry_value():
+    # 예시: GPIO로 읽는다면
+    # import RPi.GPIO as GPIO
+    # GPIO.setmode(GPIO.BCM)
+    # GPIO.setup(PIN_NUMBER, GPIO.IN)
+    # return GPIO.input(PIN_NUMBER)
+        return 1  #지금은 임시!
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    myWindow = WindowClass()
+
+    rpi_value = get_raspberry_value()
+
+    if rpi_value == 1:
+         myWindow = SeniorWindowClass()  
+    else:
+        myWindow = WindowClass()
+
     myWindow.show()
     app.exec_()
+
